@@ -11,13 +11,14 @@ import time
 from datetime import datetime
 import insightface
 from insightface.app import FaceAnalysis
+from ultralytics import YOLO
 import warnings
 warnings.filterwarnings('ignore')
 
 class FaceRecognitionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Face Recognition System")
+        self.root.title("Face Recognition System - YOLO + ArcFace")
         self.root.geometry("1400x800")
         self.root.configure(bg='#2c3e50')
         
@@ -33,8 +34,9 @@ class FaceRecognitionApp:
         self.face_names = []
         self.current_frame = None
         
-        # Model
-        self.detector = None
+        # Models
+        self.yolo_model = None  # YOLO for face detection
+        self.arcface_model = None  # ArcFace for face recognition
         
         # Setup GUI
         self.setup_gui()
@@ -65,7 +67,7 @@ class FaceRecognitionApp:
                               font=('Arial', 20, 'bold'), bg='#34495e', fg='#ecf0f1')
         title_label.pack()
         
-        subtitle_label = tk.Label(title_frame, text="Using InsightFace + ArcFace", 
+        subtitle_label = tk.Label(title_frame, text="YOLO (Detection) + ArcFace (Recognition)", 
                                  font=('Arial', 12), bg='#34495e', fg='#bdc3c7')
         subtitle_label.pack(pady=(5, 0))
         
@@ -128,7 +130,7 @@ class FaceRecognitionApp:
         threshold_frame = tk.Frame(settings_section, bg='#34495e')
         threshold_frame.pack(fill=tk.X, padx=15, pady=10)
         
-        threshold_label = tk.Label(threshold_frame, text="Minimum Similarity (%):", 
+        threshold_label = tk.Label(threshold_frame, text="Recognition Similarity (%):", 
                                   font=('Arial', 11), bg='#34495e', fg='#bdc3c7', anchor=tk.W)
         threshold_label.pack(fill=tk.X)
         
@@ -150,11 +152,11 @@ class FaceRecognitionApp:
         # Update threshold label when scale changes
         self.threshold_var.trace('w', self.update_threshold_label)
         
-        # Detection Confidence
+        # YOLO Detection Confidence
         conf_frame = tk.Frame(settings_section, bg='#34495e')
         conf_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
         
-        conf_label = tk.Label(conf_frame, text="Face Detection Confidence:", 
+        conf_label = tk.Label(conf_frame, text="YOLO Detection Confidence:", 
                              font=('Arial', 11), bg='#34495e', fg='#bdc3c7', anchor=tk.W)
         conf_label.pack(fill=tk.X)
         
@@ -175,6 +177,21 @@ class FaceRecognitionApp:
         
         # Update confidence label when scale changes
         self.conf_var.trace('w', self.update_confidence_label)
+        
+        # YOLO Model Selection
+        model_frame = tk.Frame(settings_section, bg='#34495e')
+        model_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+        
+        model_label = tk.Label(model_frame, text="YOLO Model Size:", 
+                              font=('Arial', 11), bg='#34495e', fg='#bdc3c7', anchor=tk.W)
+        model_label.pack(fill=tk.X)
+        
+        self.model_var = tk.StringVar(value="yolov8n-face.pt")
+        model_options = ["yolov8n-face.pt", "yolov8s-face.pt", "yolov8m-face.pt", "yolov8l-face.pt"]
+        model_combo = ttk.Combobox(model_frame, textvariable=self.model_var, 
+                                  values=model_options, state="readonly",
+                                  font=('Arial', 10))
+        model_combo.pack(fill=tk.X, pady=(5, 0))
         
         # Control Buttons Section
         button_section = tk.Frame(left_panel, bg='#34495e')
@@ -273,18 +290,31 @@ class FaceRecognitionApp:
                                             width=20)
         self.target_persons_label.grid(row=1, column=1, padx=20, pady=5)
         
-        # Instructions Panel
-        instructions_panel = tk.Frame(right_panel, bg='#2c3e50')
-        instructions_panel.pack(fill=tk.X, padx=10, pady=(0, 10))
+        # Model Info Panel
+        model_info_panel = tk.Frame(right_panel, bg='#2c3e50')
+        model_info_panel.pack(fill=tk.X, padx=10, pady=(0, 10))
         
-        instructions_text = """
-        KELOMPOK 3 - GRAFIKA KOMPUTER KELAS D
+        model_info_text = """
+        MODEL ARCHITECTURE:
+        • Face Detection: YOLOv8 (Real-time object detection)
+        • Face Recognition: ArcFace (High-accuracy face recognition)
+        
+        YOLO Models Available:
+        • yolov8n-face.pt: Fastest, lower accuracy
+        • yolov8s-face.pt: Balanced speed/accuracy
+        • yolov8m-face.pt: More accurate, slower
+        • yolov8l-face.pt: Most accurate, slowest
+        
+        Similarity Threshold:
+        • 70-80%: Good match
+        • 80-90%: Very confident match
+        • 90%+: Excellent match
         """
         
-        instructions_label = tk.Label(instructions_panel, text=instructions_text, 
-                                     font=('Arial', 10), bg='#2c3e50', fg='#ecf0f1', 
-                                     justify=tk.LEFT, anchor=tk.W)
-        instructions_label.pack(fill=tk.X, padx=10, pady=10)
+        model_info_label = tk.Label(model_info_panel, text=model_info_text, 
+                                   font=('Arial', 9), bg='#2c3e50', fg='#ecf0f1', 
+                                   justify=tk.LEFT, anchor=tk.W)
+        model_info_label.pack(fill=tk.X, padx=10, pady=10)
         
         # Initialize statistics
         self.stats = {
@@ -353,7 +383,7 @@ class FaceRecognitionApp:
             self.status_label.config(text=f"Loaded {image_count} images for {len(names_set)} persons")
             
     def load_target_images(self):
-        """Load target images and extract face embeddings"""
+        """Load target images and extract face embeddings using ArcFace"""
         if not self.target_folder:
             messagebox.showerror("Error", "Please select target folder first!")
             return False
@@ -363,9 +393,9 @@ class FaceRecognitionApp:
             self.face_embeddings = []
             self.face_names = []
             
-            # Initialize face analysis
-            app = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-            app.prepare(ctx_id=0, det_size=(640, 640))
+            # Initialize ArcFace model for recognition
+            self.arcface_model = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            self.arcface_model.prepare(ctx_id=0, det_size=(640, 640))
             
             # Process each image in target folder
             processed_count = 0
@@ -382,8 +412,8 @@ class FaceRecognitionApp:
                         if img is None:
                             continue
                             
-                        # Detect faces
-                        faces = app.get(img)
+                        # Detect faces using ArcFace detector (for training only)
+                        faces = self.arcface_model.get(img)
                         if len(faces) > 0:
                             # Get the largest face (assuming it's the target person)
                             face = max(faces, key=lambda x: (x.bbox[2]-x.bbox[0])*(x.bbox[3]-x.bbox[1]))
@@ -404,7 +434,7 @@ class FaceRecognitionApp:
                     
             self.face_embeddings = np.array(self.face_embeddings)
             
-            self.update_status(f"Loaded {processed_count} images for {len(self.face_names)} persons")
+            self.update_status(f"ArcFace: Loaded {processed_count} images for {len(self.face_names)} persons")
             return len(self.face_names) > 0
             
         except Exception as e:
@@ -412,11 +442,11 @@ class FaceRecognitionApp:
             return False
             
     def recognize_face(self, embedding, threshold_percent=70):
-        """Recognize face using cosine similarity and return percentage"""
+        """Recognize face using ArcFace cosine similarity and return percentage"""
         if len(self.face_embeddings) == 0:
             return None, 0
             
-        # Calculate cosine similarities
+        # Calculate cosine similarities using ArcFace embeddings
         embedding = embedding / np.linalg.norm(embedding)
         similarities = np.dot(self.face_embeddings, embedding)
         
@@ -432,21 +462,32 @@ class FaceRecognitionApp:
         return None, similarity_percent
         
     def process_video(self):
-        """Main video processing function"""
+        """Main video processing function using YOLO for detection and ArcFace for recognition"""
         try:
-            # Load target images
-            self.update_status("Loading target images...")
+            # Load target images with ArcFace
+            self.update_status("Loading target images with ArcFace...")
             self.update_progress(5, "Loading target images...")
             if not self.load_target_images():
                 return
                 
-            # Initialize models
-            self.update_status("Initializing face detector...")
-            self.update_progress(15, "Initializing face detector...")
+            # Initialize YOLO model for face detection
+            self.update_status(f"Loading YOLO model: {self.model_var.get()}...")
+            self.update_progress(15, f"Loading YOLO {self.model_var.get()}...")
             
-            # Initialize face detector
-            self.detector = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-            self.detector.prepare(ctx_id=0, det_size=(640, 640))
+            try:
+                # Try to load YOLO face detection model
+                self.yolo_model = YOLO(self.model_var.get())
+            except:
+                # If model doesn't exist, download it
+                self.update_status("Downloading YOLO face model...")
+                model_name = self.model_var.get().replace('.pt', '')
+                self.yolo_model = YOLO(model_name)
+            
+            # Initialize ArcFace model for recognition
+            self.update_status("Initializing ArcFace model...")
+            self.update_progress(25, "Initializing ArcFace...")
+            self.arcface_model = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            self.arcface_model.prepare(ctx_id=0, det_size=(640, 640))
             
             # Open video
             self.cap = cv2.VideoCapture(self.video_path)
@@ -485,16 +526,23 @@ class FaceRecognitionApp:
                 'target_persons': len(self.face_names)
             }
             
-            self.update_status("Processing video...")
-            self.update_progress(25, "Starting video processing...")
+            self.update_status("Processing video with YOLO + ArcFace...")
+            self.update_progress(30, "Starting video processing...")
+            
+            # Model information for display
+            model_info = f"YOLO: {self.model_var.get()} | ArcFace | Similarity: {similarity_threshold}%"
             
             while self.processing and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if not ret:
                     break
                     
-                # Process frame
+                # Process frame with YOLO + ArcFace
                 processed_frame = self.process_frame(frame, detection_threshold, similarity_threshold)
+                
+                # Add model info to frame
+                cv2.putText(processed_frame, model_info, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 
                 # Write to output video
                 self.video_writer.write(processed_frame)
@@ -505,7 +553,7 @@ class FaceRecognitionApp:
                     
                 # Update progress
                 frame_count += 1
-                progress = 25 + (frame_count / total_frames) * 70  # Scale from 25% to 95%
+                progress = 30 + (frame_count / total_frames) * 65  # Scale from 30% to 95%
                 self.update_progress(progress, f"Processing frame {frame_count}/{total_frames}")
                 
                 # Update statistics every 10 frames
@@ -531,6 +579,9 @@ class FaceRecognitionApp:
                     f"• Recognized faces: {self.stats['recognized_faces']}\n"
                     f"• Unknown faces: {self.stats['unknown_faces']}\n"
                     f"• Target persons: {self.stats['target_persons']}\n\n"
+                    f"🔧 Models used:\n"
+                    f"• Detection: YOLO ({self.model_var.get()})\n"
+                    f"• Recognition: ArcFace\n\n"
                     f"💾 Output saved to:\n{self.output_video_path}")
                 
         except Exception as e:
@@ -543,25 +594,48 @@ class FaceRecognitionApp:
             self.stop_btn.config(state=tk.DISABLED)
             
     def process_frame(self, frame, detection_threshold, similarity_threshold):
-        """Process a single frame for face detection and recognition"""
+        """Process a single frame using YOLO for detection and ArcFace for recognition"""
         # Create a copy for drawing
         output_frame = frame.copy()
         
         try:
-            # Detect faces
-            faces = self.detector.get(frame)
+            # STEP 1: Detect faces using YOLO
+            yolo_results = self.yolo_model(frame, conf=detection_threshold, verbose=False)
             
-            for face in faces:
-                # Check detection confidence
-                if face.det_score < detection_threshold:
-                    continue
-                    
-                # Get bounding box
-                bbox = face.bbox.astype(int)
-                x1, y1, x2, y2 = bbox
+            # Extract face regions detected by YOLO
+            face_regions = []
+            for result in yolo_results:
+                boxes = result.boxes
+                if boxes is not None:
+                    for box in boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                        confidence = box.conf[0].cpu().numpy()
+                        
+                        # Only consider detections with sufficient confidence
+                        if confidence >= detection_threshold:
+                            face_regions.append({
+                                'bbox': [x1, y1, x2, y2],
+                                'confidence': confidence,
+                                'region': frame[y1:y2, x1:x2] if y2 > y1 and x2 > x1 else None
+                            })
+            
+            # STEP 2: Recognize each face using ArcFace
+            for face in face_regions:
+                x1, y1, x2, y2 = face['bbox']
                 
-                # Get face embedding
-                embedding = face.normed_embedding
+                # Extract face region for recognition
+                face_region = face['region']
+                if face_region is None or face_region.size == 0:
+                    continue
+                
+                # Get ArcFace embedding for this face
+                arcface_faces = self.arcface_model.get(face_region)
+                if len(arcface_faces) == 0:
+                    continue
+                
+                # Get the main face embedding
+                arcface_face = arcface_faces[0]
+                embedding = arcface_face.normed_embedding
                 
                 # Recognize face and get percentage
                 name, similarity_percent = self.recognize_face(embedding, similarity_threshold)
@@ -579,10 +653,10 @@ class FaceRecognitionApp:
                 else:
                     color = (0, 0, 255)  # Red for unknown
                 
-                # Draw rectangle
+                # Draw YOLO detection rectangle
                 cv2.rectangle(output_frame, (x1, y1), (x2, y2), color, 2)
                 
-                # Prepare label with percentage
+                # Prepare label with YOLO confidence and ArcFace similarity
                 if name:
                     label = f"{name}: {similarity_percent:.1f}%"
                 else:
@@ -597,8 +671,8 @@ class FaceRecognitionApp:
                 cv2.putText(output_frame, label, (x1, y1 - 5), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 
-                # Draw detection confidence (smaller, above the main label)
-                det_label = f"Det: {face.det_score:.2f}"
+                # Draw YOLO detection confidence
+                det_label = f"YOLO: {face['confidence']:.2f}"
                 det_size = cv2.getTextSize(det_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
                 cv2.putText(output_frame, det_label, (x1, y1 - label_size[1] - 15), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
@@ -690,7 +764,7 @@ class FaceRecognitionApp:
         self.stop_btn.config(state=tk.NORMAL)
         
         # Reset progress and statistics
-        self.update_progress(0, "Initializing...")
+        self.update_progress(0, "Initializing YOLO + ArcFace...")
         self.stats = {'total_faces': 0, 'recognized_faces': 0, 'unknown_faces': 0, 'target_persons': 0}
         self.update_statistics()
         
